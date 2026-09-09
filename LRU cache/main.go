@@ -45,14 +45,14 @@ func (c *LRUCache) Put(key string, value string) string {
 	if _, ok := c.nodeCache[key]; ok {
 		c.nodeCache[key].data = value
 		c.re_rank(key)
-		fmt.Println("Already cached, re-ranked")
+		// fmt.Println("Already cached, re-ranked")
 		return value
 	}
 	// Check if capacity if full
 	if len(c.nodeCache) == c.capacity {
 		// evict the LRUNode
 		lruNode := c.LRUNode
-		fmt.Println("EVICTED -> ", lruNode.data)
+		// fmt.Println("EVICTED -> ", lruNode.data)
 		if lruNode.prevBlock != nil {
 			c.LRUNode = lruNode.prevBlock
 			lruNode.prevBlock.nextBlock = nil
@@ -78,7 +78,7 @@ func (c *LRUCache) Put(key string, value string) string {
 		c.MFUNode.prevBlock = nodeBlock
 		c.MFUNode = nodeBlock
 	}
-	fmt.Println("Successfully cached")
+	// fmt.Println("Successfully cached")
 	return value
 }
 
@@ -122,7 +122,7 @@ func (c *LRUCache) Show() {
 	current := c.MFUNode
 	count := 1
 	for current != nil {
-		fmt.Printf("Rank %d -  %s\n", count, current.key)
+		// fmt.Printf("Rank %d -  %s\n", count, current.key)
 		count++
 		current = current.nextBlock
 	}

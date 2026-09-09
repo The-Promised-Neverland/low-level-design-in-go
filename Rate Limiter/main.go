@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sync"
 	"time"
 )
@@ -14,6 +13,7 @@ type RateLimiter interface {
 type Bucket struct {
 	Tokens     float64
 	LastRefill time.Time
+	bmu        sync.Mutex // mutex for bucket
 }
 
 // RATE LIMITER, Token Bucket rate limiter
@@ -21,7 +21,7 @@ type TokenBucketRateLimiter struct {
 	Capacity   float64            // maximum tokens in bucket
 	RefillRate float64            // tokens added per second
 	cache      map[string]*Bucket // in-memory cache
-	mu         sync.Mutex         // mutex for map
+	rmu        sync.RWMutex       // mutex for map
 }
 
 func NewTokenBucketRateLimiter(capacity float64, refillRate float64) *TokenBucketRateLimiter {
@@ -38,68 +38,40 @@ func minFunction(a float64, b float64) float64 {
 	}
 	return a
 }
-
 func (rl *TokenBucketRateLimiter) Allow(userId string) (bool, error) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	// User is first time user
-	if _, ok := rl.cache[userId]; !ok {
-		rl.cache[userId] = &Bucket{
-			Tokens:     rl.Capacity,
-			LastRefill: time.Now(),
+	// Find bucket
+	rl.rmu.RLock()
+	bucket, exists := rl.cache[userId]
+	rl.rmu.RUnlock()
+	// Create
+	if !exists {
+		rl.rmu.Lock()
+		// Check again after acquiring write lock.
+		bucket, exists = rl.cache[userId]
+		if !exists {
+			bucket = &Bucket{
+				Tokens:     rl.Capacity,
+				LastRefill: time.Now(),
+			}
+			rl.cache[userId] = bucket
 		}
+		rl.rmu.Unlock()
 	}
-	// Current bucket snapshot
-	bucket := rl.cache[userId]
+	// Bucket retrieved
+	bucket.bmu.Lock()
+	defer bucket.bmu.Unlock()
 	now := time.Now()
-
-	// User bucket refilled as per seconds elapsed
 	secondsElapsed := now.Sub(bucket.LastRefill).Seconds()
 	tokensToFillIn := rl.RefillRate * secondsElapsed
 	bucket.Tokens = minFunction(rl.Capacity, tokensToFillIn+bucket.Tokens)
 	bucket.LastRefill = now
-
-	// If not tokens available
+	// No tokens available
 	if bucket.Tokens < 1 {
 		return false, nil
 	}
-
-	// Deduct the token use
 	bucket.Tokens--
-
 	return true, nil
 }
 
 func main() {
-	rl := NewTokenBucketRateLimiter(100, 5)
-	userID := "user-123"
-	// Fire 105 requests immediately.
-	// Capacity is 100, so roughly the first 100 should succeed.
-	for i := 1; i <= 105; i++ {
-		go func() {
-			allowed, _ := rl.Allow(userID)
-			fmt.Printf(
-				"Request %d: allowed=%v, tokens=%.2f\n",
-				i,
-				allowed,
-				rl.cache[userID].Tokens,
-			)
-		}()
-	}
-	fmt.Println("\nWaiting 2 seconds...")
-	time.Sleep(2 * time.Second)
-	fmt.Println("\nSending another 12 requests:")
-	for i := 1; i <= 12; i++ {
-		go func() {
-			allowed, _ := rl.Allow(userID)
-			fmt.Printf(
-				"Request %d: allowed=%v, tokens=%.2f\n",
-				i,
-				allowed,
-				rl.cache[userID].Tokens,
-			)
-		}()
-	}
-	time.Sleep(10 * time.Second)
-
 }

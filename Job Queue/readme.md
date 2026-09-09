@@ -1,106 +1,350 @@
-LLD Problem: In-Memory Concurrent Job Queue
+# In-Memory Concurrent Job Queue
 
-Design and implement a thread-safe, in-memory Job Queue / Worker Pool in Go.
+A thread-safe, in-memory **Job Queue / Worker Pool** implemented in Go.
 
-The system should allow producers to submit jobs into a queue. A configurable number of workers should consume and process these jobs concurrently.
+The system allows multiple producers to submit jobs while a configurable pool of workers processes them concurrently. Failed jobs can be retried and eventually moved to a **Dead Letter Queue (DLQ)** when retries are exhausted.
 
-Requirements:
+## Problem Statement
 
-1. Define a Job containing:
-   - ID
-   - Payload
-   - Retry count or any other fields you think are necessary.
+Design and implement an in-memory concurrent job processing system.
 
-2. The Job Queue should expose roughly the following API:
+The queue should accept jobs from multiple goroutines, distribute them across multiple workers, retry failed jobs, support a dead letter queue, and shut down gracefully without losing already accepted work.
 
-   type JobQueue interface {
-       Submit(job Job) error
-       Start()
-       Shutdown()
-   }
+## Functional Requirements
 
-3. Submit(job):
-   - Adds a job to the queue.
-   - Multiple goroutines may call Submit concurrently.
-   - Once shutdown begins, new jobs must not be accepted.
+### Job
 
-4. Worker Pool:
-   - Number of workers should be configurable.
-   - Workers run concurrently.
-   - Each submitted job must be processed by exactly one worker.
-   - A worker should pick the next available job after finishing its current job.
+A job should contain the information required for processing and retry handling.
 
-5. Job Processing:
-   - Simulate job processing using a function such as:
+For example:
 
-       Process(job Job) error
+```go
+type Job struct {
+    ID       string
+    Payload  any
+    Attempts int
+}
+```
 
-   - Processing may succeed or fail.
+Additional fields may be introduced as required.
 
-6. Retry:
-   - If processing fails, retry the job.
-   - Maximum retry count: 3.
-   - A retry must not result in multiple workers processing the same attempt simultaneously.
+## Expected Interface
 
-7. Dead Letter Queue (DLQ):
-   - If a job continues to fail after the maximum retries, move it to a DLQ.
-   - Failed jobs should be inspectable later.
+```go
+type JobQueue interface {
+    Submit(job Job) error
+    Start()
+    Shutdown()
+}
+```
 
-8. Graceful Shutdown:
-   - Stop accepting new jobs.
-   - Finish processing all jobs that were already accepted.
-   - Include jobs that are currently being processed or waiting for retry.
-   - Workers should exit cleanly.
-   - Shutdown() should return only after all accepted work has either succeeded or moved to the DLQ.
+An implementation may expose additional operations such as inspecting or redriving the DLQ.
 
-9. Thread Safety:
-   - The system must work correctly when multiple producers and workers operate concurrently.
-   - Avoid race conditions, deadlocks, and goroutine leaks.
+## Submit
 
-10. In-memory only:
-    - Do not use Redis, Kafka, RabbitMQ, databases, or external queues.
+```go
+Submit(job Job) error
+```
 
-Expected properties:
+`Submit` should:
 
-- Concurrent job processing.
-- Configurable worker count.
-- Each job handled by only one worker at a time.
-- Retry up to 3 times.
-- DLQ after retry exhaustion.
-- Graceful shutdown.
-- Thread-safe implementation.
+* Add a job to the queue.
+* Be safe when called concurrently by multiple goroutines.
+* Reject new jobs once shutdown has started.
+* Ensure an accepted job is eventually either processed successfully or moved to the DLQ.
 
-Example:
+## Worker Pool
 
+The number of workers should be configurable.
+
+Each worker continuously waits for available jobs:
+
+```text
+                 Job Queue
+                    │
+          ┌─────────┼─────────┐
+          │         │         │
+          ▼         ▼         ▼
+
+      Worker-1  Worker-2  Worker-3
+```
+
+Workers should:
+
+* Run concurrently.
+* Process one job at a time.
+* Ensure each individual attempt is handled by only one worker.
+* Pick another available job after completing the current one.
+* Exit cleanly during shutdown.
+
+## Job Processing
+
+Job execution can be represented by a function such as:
+
+```go
+func Process(job Job) error
+```
+
+Processing may either succeed or fail.
+
+```text
+Job
+ │
+ ▼
+Process()
+ │
+ ├── Success ──> Complete
+ │
+ └── Failure ──> Retry
+```
+
+## Retry
+
+If processing fails, the job should be retried.
+
+The default maximum retry count is:
+
+```text
+3 retries
+```
+
+A retry may optionally support:
+
+* Retry delay
+* Backoff
+* Jitter
+* Per-job retry configuration
+
+Only one worker should process a particular attempt at any given time.
+
+Conceptually:
+
+```text
+Attempt 1
+    │
+    └── FAIL
+         │
+         ▼
+     Attempt 2
+         │
+         └── FAIL
+              │
+              ▼
+          Attempt 3
+              │
+              └── FAIL
+                   │
+                   ▼
+                  DLQ
+```
+
+## Dead Letter Queue
+
+Jobs that continue to fail after exhausting their retry policy should be moved to a **Dead Letter Queue**.
+
+```text
+Processing
+    │
+    ├── Success ───────> Done
+    │
+    └── Retry exhausted
+             │
+             ▼
+            DLQ
+```
+
+The DLQ should keep failed jobs available for later inspection.
+
+An implementation may also support redriving DLQ jobs back into the active queue.
+
+## Example
+
+Suppose four jobs are submitted:
+
+```text
 Submit A
 Submit B
 Submit C
 Submit D
+```
 
-Worker-1 -> A
-Worker-2 -> B
-Worker-3 -> C
+With three workers:
 
-Worker-2 finishes B
-Worker-2 -> D
+```text
+                Queue
+             [ A B C D ]
+                 │
+        ┌────────┼────────┐
+        ▼        ▼        ▼
 
-Worker-1 fails A
-A -> Retry #1
+    Worker-1  Worker-2  Worker-3
+       A         B         C
+```
 
-Worker-3 finishes C
+If Worker-2 finishes first:
 
-Worker-2 may pick up retry A
+```text
+Worker-2
+   │
+   └── B completed
+          │
+          ▼
+          D
+```
 
-A fails 3 times
-A -> DLQ
+If `A` fails:
 
-Think about:
+```text
+Worker-1 -> A -> FAIL
+                 │
+                 ▼
+              Retry A
+```
 
-- Which Go concurrency primitives should be used?
-- Buffered vs unbuffered channels?
-- How will workers know when to stop?
-- How will Shutdown() know all accepted jobs are finished?
-- Where should failed jobs be requeued?
-- How do you prevent sending to a closed channel?
-- Who should own/close the channels?
-- How do you avoid losing retry jobs during shutdown?
+A worker can later process the retry:
+
+```text
+Worker-2 -> Retry A
+```
+
+If `A` continues failing until its retry limit is exhausted:
+
+```text
+A
+│
+├── Attempt 1 -> FAIL
+├── Attempt 2 -> FAIL
+├── Attempt 3 -> FAIL
+│
+▼
+DLQ
+```
+
+## Concurrency
+
+Multiple producers may submit jobs concurrently while multiple workers consume them:
+
+```text
+Producer-1 ──┐
+Producer-2 ──┤
+Producer-3 ──┼──> Job Queue
+Producer-4 ──┘
+                 │
+        ┌────────┼────────┐
+        ▼        ▼        ▼
+    Worker-1  Worker-2  Worker-3
+```
+
+The implementation must remain correct under concurrent:
+
+* Job submissions
+* Job consumption
+* Retry processing
+* DLQ writes
+* Startup and shutdown
+
+## Graceful Shutdown
+
+`Shutdown()` should stop accepting new jobs while allowing already accepted work to finish.
+
+The expected sequence is:
+
+```text
+Shutdown()
+    │
+    ▼
+Reject new submissions
+    │
+    ▼
+Finish queued jobs
+    │
+    ▼
+Finish jobs currently being processed
+    │
+    ▼
+Finish pending retries
+    │
+    ▼
+Success or DLQ
+    │
+    ▼
+Workers exit
+    │
+    ▼
+Shutdown() returns
+```
+
+Shutdown must avoid:
+
+* Dropping accepted jobs
+* Sending jobs to a closed channel
+* Closing a channel while producers are still sending
+* Leaving workers blocked forever
+* Goroutine leaks
+* Deadlocks
+
+## Thread Safety
+
+The queue must support multiple producers and workers concurrently without:
+
+* Data races
+* Duplicate processing of the same attempt
+* Lost jobs
+* Corrupted DLQ state
+* Deadlocks
+* Goroutine leaks
+* `send on closed channel` panics
+
+Synchronization should be designed carefully around queue lifecycle and shared state.
+
+## In-Memory Constraint
+
+The entire system must operate within the Go process.
+
+Do not use:
+
+```text
+Redis
+Kafka
+RabbitMQ
+SQS
+Databases
+External message brokers
+```
+
+All queued jobs and DLQ entries are lost when the process terminates.
+
+## Expected Properties
+
+The final implementation should provide:
+
+| Property                       | Expected Behavior        |
+| ------------------------------ | ------------------------ |
+| Concurrent producers           | Supported                |
+| Concurrent workers             | Supported                |
+| Configurable worker count      | Supported                |
+| Exactly one worker per attempt | Required                 |
+| Retry                          | Up to configured maximum |
+| DLQ                            | Failed jobs retained     |
+| Graceful shutdown              | Required                 |
+| Thread safety                  | Required                 |
+| External dependencies          | None                     |
+
+## Design Considerations
+
+Important questions to consider while designing the system:
+
+* Which Go concurrency primitives are appropriate?
+* Should the job channel be buffered or unbuffered?
+* What should determine the queue buffer size?
+* How should workers know when they need to exit?
+* Who owns the job channel?
+* Who is responsible for closing it?
+* How should `Shutdown()` know that all accepted jobs are complete?
+* How should retries be scheduled?
+* Should retries happen inside the same worker or be requeued?
+* How can retry jobs be preserved during shutdown?
+* How do you prevent `Submit()` from sending to a closed channel?
+* How should lifecycle state be synchronized?
+* Should DLQ synchronization be independent from queue lifecycle synchronization?
+* How should a DLQ redrive behave if shutdown begins midway through the operation?
