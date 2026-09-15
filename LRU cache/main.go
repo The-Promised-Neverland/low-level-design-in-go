@@ -1,10 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"strings"
 	"sync"
 )
 
@@ -22,19 +18,19 @@ type LRUNode struct {
 }
 
 type LRUCache struct {
-	nodeCache   map[string]*LRUNode
-	MFUNode     *LRUNode
-	LRUNode     *LRUNode
-	capacity    int // Total Capacity this cache can hold
-	mu          sync.Mutex
+	nodeCache map[string]*LRUNode
+	MFUNode   *LRUNode
+	LRUNode   *LRUNode
+	capacity  int // Total Capacity this cache can hold
+	mu        sync.Mutex
 }
 
 func NewLRUCache(capacity int) *LRUCache {
 	return &LRUCache{
-		nodeCache:   make(map[string]*LRUNode),
-		capacity:    capacity,
-		MFUNode:     nil,
-		LRUNode:     nil,
+		nodeCache: make(map[string]*LRUNode),
+		capacity:  capacity,
+		MFUNode:   nil,
+		LRUNode:   nil,
 	}
 }
 
@@ -128,165 +124,6 @@ func (c *LRUCache) Show() {
 	}
 }
 
-// --------------------------------------------------
-// MANUAL MODE
-// --------------------------------------------------
-
-func runManualMode(cache *LRUCache) {
-	scanner := bufio.NewScanner(os.Stdin)
-
-	fmt.Println()
-	fmt.Println("Manual Mode")
-	fmt.Println("-----------")
-	fmt.Println("Commands:")
-	fmt.Println("put <key> <value>")
-	fmt.Println("get <key>")
-	fmt.Println("show")
-	fmt.Println("exit")
-
-	for {
-		fmt.Print("> ")
-
-		if !scanner.Scan() {
-			return
-		}
-
-		input := scanner.Text()
-		parts := strings.Fields(input)
-
-		if len(parts) == 0 {
-			continue
-		}
-
-		switch strings.ToLower(parts[0]) {
-
-		case "put":
-			if len(parts) != 3 {
-				fmt.Println("Usage: put <key> <value>")
-				continue
-			}
-
-			key := parts[1]
-			value := parts[2]
-
-			cache.Put(key, value)
-
-		case "get":
-			if len(parts) != 2 {
-				fmt.Println("Usage: get <key>")
-				continue
-			}
-
-			key := parts[1]
-
-			value := cache.Get(key)
-
-			fmt.Printf("%s -> %s\n", key, value)
-
-		case "show":
-			if len(parts) != 1 {
-				fmt.Println("Usage: show")
-				continue
-			}
-
-			cache.Show()
-
-		case "exit":
-			return
-
-		default:
-			fmt.Println("Unknown command")
-		}
-	}
-}
-
-// --------------------------------------------------
-// CONCURRENT MODE
-// --------------------------------------------------
-
-func runConcurrentMode(cache *LRUCache) {
-	var wg sync.WaitGroup
-
-	entries := []struct {
-		key   string
-		value string
-	}{
-		{"tree", "apple"},
-		{"car", "bmw"},
-		{"phone", "iphone"},
-		{"fruit", "mango"},
-		{"language", "golang"},
-		{"database", "postgres"},
-		{"cache", "redis"},
-		{"cloud", "aws"},
-		{"os", "linux"},
-		{"editor", "vim"},
-	}
-
-	fmt.Println()
-	fmt.Println("Concurrent Mode")
-	fmt.Println("---------------")
-	fmt.Println("Starting goroutines...")
-
-	for _, entry := range entries {
-		wg.Add(1)
-
-		go func(key, value string) {
-			defer wg.Done()
-
-			fmt.Printf(
-				"[GOROUTINE] PUT %s %s\n",
-				key,
-				value,
-			)
-
-			cache.Put(key, value)
-
-		}(entry.key, entry.value)
-	}
-
-	wg.Wait()
-
-	fmt.Println()
-	fmt.Println("All goroutines completed.")
-	fmt.Println()
-
-	cache.Show()
-}
-
-// --------------------------------------------------
-// MAIN
-// --------------------------------------------------
-
 func main() {
-	cache := NewLRUCache(1)
 
-	var mode int
-
-	fmt.Println("======================")
-	fmt.Println("       LRU CACHE")
-	fmt.Println("======================")
-	fmt.Println()
-	fmt.Println("1. Manual Mode")
-	fmt.Println("2. Concurrent Mode")
-	fmt.Println()
-	fmt.Print("Select mode: ")
-
-	_, err := fmt.Scan(&mode)
-	if err != nil {
-		fmt.Println("Invalid input")
-		return
-	}
-
-	switch mode {
-
-	case 1:
-		runManualMode(cache)
-
-	case 2:
-		runConcurrentMode(cache)
-
-	default:
-		fmt.Println("Invalid mode")
-	}
 }
