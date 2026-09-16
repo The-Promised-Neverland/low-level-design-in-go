@@ -147,17 +147,21 @@ func (g *SnakeLadders) PlayTurn() (*TurnResult, error) {
 		FromPosition: currentPlayer.Position,
 		ToPosition:   currentPlayer.Position,
 	}
+	toPosition := 6*g.ConsecutiveSixes + dice + currentPlayer.Position
 	if dice == 6 {
 		if g.ConsecutiveSixes == 2 {
 			g.ConsecutiveSixes = 0
 			g.CurrentTurn = (g.CurrentTurn + 1) % len(g.Players)
-			return TurnResult, errors.New("Consecutive three sixes. Turn forfeited..")
-		} else {
-			g.ConsecutiveSixes++
-			return TurnResult, errors.New("Six. Another turn granted")
+			return TurnResult, errors.New("Consecutive three sixes. Turn forfeited")
 		}
+		if toPosition > 100 {
+			g.ConsecutiveSixes = 0
+			g.CurrentTurn = (g.CurrentTurn + 1) % len(g.Players)
+			return TurnResult, errors.New("Overshooting. Turn forfeited")
+		}
+		g.ConsecutiveSixes++
+		return TurnResult, errors.New("Six. Another turn granted")
 	}
-	toPosition := 6*g.ConsecutiveSixes + dice + currentPlayer.Position
 	g.ConsecutiveSixes = 0
 	if toPosition > 100 {
 		g.CurrentTurn = (g.CurrentTurn + 1) % len(g.Players)
