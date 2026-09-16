@@ -13,7 +13,6 @@ type Store interface {
 	Delete(key string) bool
 	Exists(key string) bool
 	Shutdown()
-	autoCleanup()
 }
 
 type Entry struct {
