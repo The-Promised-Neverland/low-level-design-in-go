@@ -11,7 +11,7 @@ func (s LoadBalancedRearrangement) PlanRearrangement(floors []*models.Floor, rec
 	if len(floors) == 0 {
 		return plan
 	}
-	targetPlan := make([]int, len(floors))
+	usedSpace := make([]int, len(floors))
 	for _, record := range records {
 		if record.UnparkRequested { // do not plan for vehicles scheduled for unparking
 			continue
@@ -22,17 +22,17 @@ func (s LoadBalancedRearrangement) PlanRearrangement(floors []*models.Floor, rec
 		}
 		selectedFloor := -1
 		for i, floor := range floors {
-			if targetPlan[i]+requiredSpace > floor.Capacity { // we cannot fit this vehicle here
+			if usedSpace[i]+requiredSpace > floor.Capacity { // we cannot fit this vehicle here
 				continue
 			}
-			if selectedFloor == -1 || targetPlan[i] < targetPlan[selectedFloor] {
+			if selectedFloor == -1 || usedSpace[i] < usedSpace[selectedFloor] {
 				selectedFloor = i
 			}
 		}
 		if selectedFloor == -1 {
 			continue
 		}
-		targetPlan[selectedFloor] += requiredSpace
+		usedSpace[selectedFloor] += requiredSpace
 		if record.TargetFloorNumber != selectedFloor {
 			plan.Moves = append(plan.Moves, models.VehicleMove{
 				TicketID:      record.TicketID,

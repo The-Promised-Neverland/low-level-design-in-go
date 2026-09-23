@@ -1,6 +1,10 @@
 package arrangement
 
-import "parking_management/models"
+import (
+	"math"
+	"parking_management/models"
+	"sort"
+)
 
 /*
 DSA problem
@@ -29,9 +33,16 @@ One optimal arrangement is:
     [3, 3, 2, 2],
     []
 ]
+
+However, its a Bin Packing problem with a NP-hard tag. There isn't a known polynomial-time algorithm
 */
 
 type CompactionBalancedRearrangement struct{}
+
+type VehicleSpace struct {
+	TicketID string
+	Space    int
+}
 
 func (s CompactionBalancedRearrangement) PlanRearrangement(floors []*models.Floor, records map[string]*models.ParkingRecord) *models.ShufflePlan {
 	plan := &models.ShufflePlan{
@@ -40,14 +51,43 @@ func (s CompactionBalancedRearrangement) PlanRearrangement(floors []*models.Floo
 	if len(floors) == 0 {
 		return plan
 	}
-	// targetPlan := make([]int, len(floors))
-	for _, record := range records {
-		if record.UnparkRequested { // do not plan for vehicles scheduled for unparking
+	vehicles := make([]VehicleSpace, 0)
+	for ticketID, record := range records {
+		if record.UnparkRequested {
 			continue
 		}
 		requiredSpace := models.GetVehicleSpace(record.Vehicle.Type)
 		if requiredSpace == 0 {
 			continue
+		}
+		vehicles = append(vehicles, VehicleSpace{
+			TicketID: ticketID,
+			Space:    requiredSpace,
+		})
+	}
+	sort.Slice(vehicles, func(i, j int) bool {
+		return vehicles[i].Space > vehicles[j].Space
+	})
+	usedSpace := make([]int, len(floors))
+	for _, vehicle := range vehicles {
+		bestFloor := -1
+		bestRemaining := math.MaxInt
+		for i := 0; i < len(floors); i++ {
+			remaining := floors[i].Capacity - usedSpace[i]
+			if remaining >= vehicle.Space && remaining-vehicle.Space < bestRemaining {
+				bestRemaining = remaining - vehicle.Space
+				bestFloor = i
+			}
+		}
+		if bestFloor == -1 {
+			return nil // not able to compact balance
+		}
+		usedSpace[bestFloor] += vehicle.Space
+		if records[vehicle.TicketID].TargetFloorNumber != bestFloor {
+			plan.Moves = append(plan.Moves, models.VehicleMove{
+				TicketID:      vehicle.TicketID,
+				ToFloorNumber: bestFloor,
+			})
 		}
 	}
 	return plan

@@ -11,7 +11,7 @@ func (s ZoneBalancedRearrangement) PlanRearrangement(floors []*models.Floor, rec
 	if len(floors) == 0 {
 		return plan
 	}
-	targetPlan := make([]int, len(floors))
+	usedSpace := make([]int, len(floors))
 	for _, record := range records {
 		if record.UnparkRequested { // do not plan for vehicles scheduled for unparking
 			continue
@@ -23,10 +23,10 @@ func (s ZoneBalancedRearrangement) PlanRearrangement(floors []*models.Floor, rec
 		start, end := models.ZoneRange(len(floors), record.Vehicle.Type)
 		found := false
 		for i := start; i < end; i++ {
-			if targetPlan[i]+requiredSpace > floors[i].Capacity {
+			if usedSpace[i]+requiredSpace > floors[i].Capacity {
 				continue
 			}
-			targetPlan[i] += requiredSpace
+			usedSpace[i] += requiredSpace
 			if record.TargetFloorNumber != i {
 				plan.Moves = append(plan.Moves, models.VehicleMove{
 					TicketID:      record.TicketID,
