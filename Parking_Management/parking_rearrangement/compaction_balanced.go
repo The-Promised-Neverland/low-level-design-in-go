@@ -44,8 +44,8 @@ type VehicleSpace struct {
 	Space    int
 }
 
-func (s CompactionBalancedRearrangement) PlanRearrangement(floors []*models.Floor, records map[string]*models.ParkingRecord) *models.ShufflePlan {
-	plan := &models.ShufflePlan{
+func (s CompactionBalancedRearrangement) PlanRearrangement(floors []*models.Floor, records map[string]*models.ParkingRecord) *models.MoveList {
+	plan := &models.MoveList{
 		Moves: make([]models.VehicleMove, 0),
 	}
 	if len(floors) == 0 {
@@ -83,10 +83,12 @@ func (s CompactionBalancedRearrangement) PlanRearrangement(floors []*models.Floo
 			return nil // not able to compact balance
 		}
 		usedSpace[bestFloor] += vehicle.Space
-		if records[vehicle.TicketID].TargetFloorNumber != bestFloor {
+		record := records[vehicle.TicketID]
+		if record.TargetFloorNumber != bestFloor {
 			plan.Moves = append(plan.Moves, models.VehicleMove{
-				TicketID:      vehicle.TicketID,
-				ToFloorNumber: bestFloor,
+				TicketID:        vehicle.TicketID,
+				FromFloorNumber: record.TargetFloorNumber,
+				ToFloorNumber:   bestFloor,
 			})
 		}
 	}

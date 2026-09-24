@@ -19,7 +19,7 @@ func (s ZoneBalancedStrategy) Allocate(vehicle models.Vehicle, floors []*models.
 			continue
 		}
 		return &models.AllocationDecision{
-			FloorNumber: i,
+			FloorNumber: floor.Number,
 		}
 	}
 	return nil

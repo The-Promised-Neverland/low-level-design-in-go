@@ -1,15 +1,63 @@
 package main
 
-import "time"
+import (
+	"time"
+)
 
-func (p *AutomatedParkingSystem) processShuffleJob(job ShuffleJob) {
+func (p *AutomatedParkingSystem) processShuffleComponent(robotID string, comp ShuffleComponent) {
+	p.mu.Lock()
+	moves := p.waitComponentReadyLocked(comp.Moves)
+	p.mu.Unlock()
+	for _, move := range moves {
+		p.processShuffleJob(robotID, move)
+	}
+}
+
+func (p *AutomatedParkingSystem) waitComponentReadyLocked(planned []VehicleMove) []VehicleMove {
+	for {
+		ready := make([]VehicleMove, 0, len(planned))
+		waitingOnPark := false
+		for _, m := range planned {
+			record, ok := p.recordsByTktID[m.TicketID]
+			if !ok || record.UnparkRequested {
+				continue
+			}
+			if record.ParkingStatus == ParkingPending {
+				waitingOnPark = true
+				continue
+			}
+			if record.ParkingStatus == Rearranging {
+				waitingOnPark = true
+				continue
+			}
+			if record.PhysicalFloorNumber < 0 {
+				waitingOnPark = true
+				continue
+			}
+			if record.PhysicalFloorNumber == record.TargetFloorNumber {
+				continue
+			}
+			ready = append(ready, VehicleMove{
+				TicketID:        record.TicketID,
+				FromFloorNumber: record.PhysicalFloorNumber,
+				ToFloorNumber:   record.TargetFloorNumber,
+			})
+		}
+		if !waitingOnPark {
+			return ready
+		}
+		p.shuffleWake.Wait() // minimizes cpu cycles by not continously checking
+	}
+}
+
+func (p *AutomatedParkingSystem) processShuffleJob(robotID string, job VehicleMove) {
 	p.mu.Lock()
 	record, ok := p.recordsByTktID[job.TicketID]
 	if !ok {
 		p.mu.Unlock()
 		return
 	}
-	if record.UnparkRequested == true { //  no need to shuffle. its schedule for unpark
+	if record.UnparkRequested {
 		p.mu.Unlock()
 		return
 	}
@@ -23,37 +71,44 @@ func (p *AutomatedParkingSystem) processShuffleJob(job ShuffleJob) {
 	}
 	requiredSpace := getVehicleSpace(record.Vehicle.Type)
 	fromFloor := p.floors[job.FromFloorNumber]
-	toFloor := p.floors[job.ToFloorNumber]
-	stale := false
-	for toFloor.Capacity-toFloor.PhysicallyUsedCapacity < requiredSpace {
-		toFloor.Cond.Wait()
-		if record.TargetFloorNumber != job.ToFloorNumber || record.UnparkRequested {
-			stale = true
-			break
-		}
-	}
-	if stale {
-		p.mu.Unlock()
-		return
-	}
-	toFloor.PhysicallyUsedCapacity += requiredSpace
-	record.ParkingStatus = Rearranging // it has now been handed to the shuffler bots
+	fromFloor.PhysicallyUsedCapacity -= requiredSpace
+	fromFloor.Cond.Broadcast()
+	record.PhysicalFloorNumber = -1
+	record.ParkingStatus = Rearranging
+	vehicleReg := record.Vehicle.VehicleRegNo
 	p.mu.Unlock()
+	if p.observer != nil {
+		p.observer.OnShuffleStarted(robotID, job, vehicleReg)
+	}
 	time.Sleep(RobotParkingTime)
 	p.mu.Lock()
 	record, ok = p.recordsByTktID[job.TicketID]
 	if !ok {
-		toFloor.PhysicallyUsedCapacity -= requiredSpace
-		toFloor.Cond.Broadcast()
 		p.mu.Unlock()
+		if p.observer != nil {
+			p.observer.OnShuffleCompleted(robotID, job, vehicleReg)
+		}
 		return
 	}
-	fromFloor.PhysicallyUsedCapacity -= requiredSpace
-	record.PhysicalFloorNumber = job.ToFloorNumber
+	dest := record.TargetFloorNumber
+	toFloor := p.floors[dest]
+	for toFloor.Capacity-toFloor.PhysicallyUsedCapacity < requiredSpace {
+		toFloor.Cond.Wait()
+		if record.TargetFloorNumber != dest {
+			dest = record.TargetFloorNumber
+			toFloor = p.floors[dest]
+		}
+	}
+	toFloor.PhysicallyUsedCapacity += requiredSpace
+	record.PhysicalFloorNumber = dest
 	record.ParkingStatus = Parked
-	fromFloor.Cond.Broadcast()
 	shouldUnpark := record.UnparkRequested
+	vehicleReg = record.Vehicle.VehicleRegNo
+	p.shuffleWake.Broadcast()
 	p.mu.Unlock()
+	if p.observer != nil {
+		p.observer.OnShuffleCompleted(robotID, job, vehicleReg)
+	}
 	if shouldUnpark {
 		p.unparkJobCh <- UnparkJob{
 			TicketID: job.TicketID,
@@ -61,62 +116,18 @@ func (p *AutomatedParkingSystem) processShuffleJob(job ShuffleJob) {
 	}
 }
 
-func (p *AutomatedParkingSystem) shuffleRobot() {
-	for job := range p.shuffleJobCh {
-		p.processShuffleJob(job)
+func (p *AutomatedParkingSystem) shuffleRobot(robotID string) {
+	for comp := range p.shuffleJobCh {
+		p.processShuffleComponent(robotID, comp)
 		p.ShuffleJobWG.Done()
 	}
 }
 
-func (p *AutomatedParkingSystem) rearrange() {
-	for range p.rearrangeCh {
-		p.mu.Lock()
-		rearrangementStrategy, ok := p.strategy.(FloorsRearrangementStrategy)
-		if !ok {
-			p.mu.Unlock()
-			continue
-		}
-		plan := rearrangementStrategy.PlanRearrangement(p.floors, p.recordsByTktID)
-		jobs := make([]ShuffleJob, 0, len(plan.Moves))
-		for _, move := range plan.Moves {
-			record, ok := p.recordsByTktID[move.TicketID]
-			if !ok {
-				continue
-			}
-			if record.UnparkRequested { // no need to rearrange the vehicles scheduled for unparking
-				continue
-			}
-			requiredSpace := getVehicleSpace(record.Vehicle.Type)
-			oldTarget := record.TargetFloorNumber
-			newTarget := move.ToFloorNumber
-			if oldTarget == newTarget {
-				continue
-			}
-			p.floors[oldTarget].ReservedCapacity -= requiredSpace
-			p.floors[newTarget].ReservedCapacity += requiredSpace
-			record.TargetFloorNumber = newTarget
-			if record.PhysicalFloorNumber != -1 && record.PhysicalFloorNumber != newTarget {
-				jobs = append(jobs, ShuffleJob{
-					TicketID:        record.TicketID,
-					FromFloorNumber: record.PhysicalFloorNumber,
-					ToFloorNumber:   newTarget,
-				})
-			}
-		}
-		p.mu.Unlock()
-		p.ShuffleJobWG.Add(len(jobs))
-		for _, job := range jobs {
-			p.shuffleJobCh <- job
-		}
-		p.ShuffleJobWG.Wait()
-		p.mu.Lock()
-		p.shufflingInProgress = false
-		p.mu.Unlock()
-	}
-}
-
-func (p *AutomatedParkingSystem) parkers() {
+func (p *AutomatedParkingSystem) parkers(robotID string) {
 	for job := range p.parkingJobCh {
+		if p.observer != nil {
+			p.observer.OnParkingStarted(robotID, job)
+		}
 		requiredSpace := getVehicleSpace(job.Vehicle.Type)
 		p.mu.Lock()
 		floor := p.floors[job.ToFloorNumber]
@@ -130,21 +141,25 @@ func (p *AutomatedParkingSystem) parkers() {
 		shouldUnpark := false
 		if record, ok := p.recordsByTktID[job.TicketID]; ok {
 			record.PhysicalFloorNumber = job.ToFloorNumber
-			record.ParkingStatus = Parked // mark as parked
-			if record.UnparkRequested {   // customer reqeusted unparking
+			record.ParkingStatus = Parked
+			if record.UnparkRequested {
 				shouldUnpark = true
 			}
+			p.shuffleWake.Broadcast()
 		}
 		p.mu.Unlock()
+		if p.observer != nil {
+			p.observer.OnParkingCompleted(robotID, job)
+		}
 		if shouldUnpark {
-			p.unparkJobCh <- UnparkJob{ // schedule for unpark
+			p.unparkJobCh <- UnparkJob{
 				TicketID: job.TicketID,
 			}
 		}
 	}
 }
 
-func (p *AutomatedParkingSystem) unparkers() {
+func (p *AutomatedParkingSystem) unparkers(robotID string) {
 	for job := range p.unparkJobCh {
 		p.mu.Lock()
 		record, ok := p.recordsByTktID[job.TicketID]
@@ -158,15 +173,24 @@ func (p *AutomatedParkingSystem) unparkers() {
 		}
 		fromFloorNumber := record.PhysicalFloorNumber
 		requiredSpace := getVehicleSpace(record.Vehicle.Type)
+		vehicle := record.Vehicle
 		p.mu.Unlock()
+		if p.observer != nil {
+			p.observer.OnUnparkingStarted(robotID, job.TicketID, vehicle, fromFloorNumber)
+		}
 		time.Sleep(RobotParkingTime)
 		p.mu.Lock()
-		fromFloor := p.floors[fromFloorNumber]
-		fromFloor.PhysicallyUsedCapacity -= requiredSpace
-		fromFloor.Cond.Broadcast()
+		if fromFloorNumber >= 0 {
+			fromFloor := p.floors[fromFloorNumber]
+			fromFloor.PhysicallyUsedCapacity -= requiredSpace
+			fromFloor.Cond.Broadcast()
+		}
 		record.PhysicalFloorNumber = -1
 		delete(p.recordsByTktID, record.TicketID)
 		delete(p.recordsByRegNo, record.Vehicle.VehicleRegNo)
 		p.mu.Unlock()
+		if p.observer != nil {
+			p.observer.OnUnparkingCompleted(robotID, job.TicketID, vehicle, fromFloorNumber)
+		}
 	}
 }

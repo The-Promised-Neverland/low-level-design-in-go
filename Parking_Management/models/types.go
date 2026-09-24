@@ -7,7 +7,7 @@ import (
 
 type ParkingStatus string
 
-const RobotParkingTime = 15 * time.Second
+const RobotParkingTime = 10 * time.Second
 
 const (
 	ParkingPending ParkingStatus = "PARKING_PENDING"
@@ -51,20 +51,20 @@ type Floor struct {
 }
 
 type Ticket struct {
-	TicketID             string
-	VehicleDetails       Vehicle
-	EntryTime            time.Time
+	TicketID       string
+	VehicleDetails Vehicle
+	EntryTime      time.Time
 }
 
 type ParkingRecord struct {
-	TicketID             string
-	CustomerName         string // customer name is abstracted from ticket for privacy
-	Vehicle              Vehicle
-	PhysicalFloorNumber  int
-	TargetFloorNumber    int
-	EntryTime            time.Time
-	ParkingStatus        ParkingStatus
-	UnparkRequested      bool
+	TicketID            string
+	CustomerName        string // customer name is abstracted from ticket for privacy
+	Vehicle             Vehicle
+	PhysicalFloorNumber int
+	TargetFloorNumber   int
+	EntryTime           time.Time
+	ParkingStatus       ParkingStatus
+	UnparkRequested     bool
 }
 
 type Receipt struct {
@@ -80,12 +80,24 @@ type AllocationDecision struct {
 }
 
 type VehicleMove struct {
-	TicketID      string
-	ToFloorNumber int
+	TicketID        string
+	FromFloorNumber int
+	ToFloorNumber   int
 }
 
-type ShufflePlan struct {
+type MoveList struct {
 	Moves []VehicleMove
+}
+
+type MovementOrder struct {
+	Moves [][]VehicleMove
+	Loop  []bool
+}
+
+// ShuffleComponent is one weakly-connected rearrange unit (possibly a cycle).
+type ShuffleComponent struct {
+	Moves []VehicleMove
+	Loop  bool
 }
 
 type ParkingJob struct {
@@ -102,12 +114,6 @@ type RobotPoolConfig struct {
 
 type UnparkJob struct {
 	TicketID string
-}
-
-type ShuffleJob struct {
-	TicketID        string
-	FromFloorNumber int
-	ToFloorNumber   int
 }
 
 func GetVehicleSpace(vehicleType VehicleType) int {

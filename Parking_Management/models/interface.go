@@ -5,11 +5,11 @@ type ParkingStrategy interface {
 }
 
 type FloorsRearrangementStrategy interface {
-	PlanRearrangement(floors []*Floor, records map[string]*ParkingRecord) *ShufflePlan
+	PlanRearrangement(floors []*Floor, records map[string]*ParkingRecord) *MoveList
 }
 
 type ParkingSystem interface {
-	Park(vehicle Vehicle, custName string, expectedParkingHours *int) (*Ticket, error)
+	Park(vehicle Vehicle, custName string) (*Ticket, error)
 	Unpark(ticketID string) (*Receipt, error)
-	SwitchStrategy(strategy ParkingStrategy)
+	SwitchStrategy(strategy ParkingStrategy) error
 }

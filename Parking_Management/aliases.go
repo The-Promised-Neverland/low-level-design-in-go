@@ -16,11 +16,12 @@ type ParkingRecord = models.ParkingRecord
 type Receipt = models.Receipt
 type AllocationDecision = models.AllocationDecision
 type VehicleMove = models.VehicleMove
-type ShufflePlan = models.ShufflePlan
+type ShufflePlan = models.MoveList
+type MovementOrder = models.MovementOrder
+type ShuffleComponent = models.ShuffleComponent
 type ParkingJob = models.ParkingJob
 type RobotPoolConfig = models.RobotPoolConfig
 type UnparkJob = models.UnparkJob
-type ShuffleJob = models.ShuffleJob
 
 type ParkingStrategy = models.ParkingStrategy
 type FloorsRearrangementStrategy = models.FloorsRearrangementStrategy
@@ -53,10 +54,21 @@ const (
 )
 
 type NearestFloorStrategy = strategy.NearestFloorStrategy
-type ZoneBalancedStrategy = strategy.ZoneBalancedStrategy
-type CompactionStrategy = strategy.CompactionStrategy
 
-// LoadBalancedStrategy combines allocation + arrangement (same behavior as before).
+// CompactionStrategy combines compaction allocation + compaction rearrangement.
+type CompactionStrategy struct {
+	alloc strategy.CompactionStrategy
+	arr   arrangement.CompactionBalancedRearrangement
+}
+
+func (s CompactionStrategy) Allocate(vehicle Vehicle, floors []*Floor) *AllocationDecision {
+	return s.alloc.Allocate(vehicle, floors)
+}
+
+func (s CompactionStrategy) PlanRearrangement(floors []*Floor, records map[string]*ParkingRecord) *ShufflePlan {
+	return s.arr.PlanRearrangement(floors, records)
+}
+
 type LoadBalancedStrategy struct {
 	alloc strategy.LoadBalancedStrategy
 	arr   arrangement.LoadBalancedRearrangement
@@ -70,10 +82,27 @@ func (s LoadBalancedStrategy) PlanRearrangement(floors []*Floor, records map[str
 	return s.arr.PlanRearrangement(floors, records)
 }
 
+type ZoneBalancedStrategy struct {
+	alloc strategy.ZoneBalancedStrategy
+	arr   arrangement.ZoneBalancedRearrangement
+}
+
+func (s ZoneBalancedStrategy) Allocate(vehicle Vehicle, floors []*Floor) *AllocationDecision {
+	return s.alloc.Allocate(vehicle, floors)
+}
+
+func (s ZoneBalancedStrategy) PlanRearrangement(floors []*Floor, records map[string]*ParkingRecord) *ShufflePlan {
+	return s.arr.PlanRearrangement(floors, records)
+}
+
 func getVehicleSpace(vehicleType VehicleType) int {
 	return models.GetVehicleSpace(vehicleType)
 }
 
 func getVehicleRatePerHour(vehicleType VehicleType) float64 {
 	return models.GetVehicleRatePerHour(vehicleType)
+}
+
+func BuildMovementOrder(moves []VehicleMove) MovementOrder {
+	return arrangement.BuildMovementOrder(moves)
 }

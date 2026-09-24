@@ -4,8 +4,8 @@ import "parking_management/models"
 
 type LoadBalancedRearrangement struct{}
 
-func (s LoadBalancedRearrangement) PlanRearrangement(floors []*models.Floor, records map[string]*models.ParkingRecord) *models.ShufflePlan {
-	plan := &models.ShufflePlan{
+func (s LoadBalancedRearrangement) PlanRearrangement(floors []*models.Floor, records map[string]*models.ParkingRecord) *models.MoveList {
+	plan := &models.MoveList{
 		Moves: make([]models.VehicleMove, 0),
 	}
 	if len(floors) == 0 {
@@ -30,13 +30,14 @@ func (s LoadBalancedRearrangement) PlanRearrangement(floors []*models.Floor, rec
 			}
 		}
 		if selectedFloor == -1 {
-			continue
+			return nil // not able to rearrange
 		}
 		usedSpace[selectedFloor] += requiredSpace
 		if record.TargetFloorNumber != selectedFloor {
 			plan.Moves = append(plan.Moves, models.VehicleMove{
-				TicketID:      record.TicketID,
-				ToFloorNumber: selectedFloor,
+				TicketID:        record.TicketID,
+				FromFloorNumber: record.TargetFloorNumber,
+				ToFloorNumber:   selectedFloor,
 			})
 		}
 	}
