@@ -1,5 +1,19 @@
 # Automated Smart Parking System
 
+## Working with the Code
+
+The project contains the parking engine, robot workers, allocation strategies,
+and rearrangement logic. Construct an engine with `NewAutomatedParkingSystem`
+and call `Park`, `Unpark`, and `SwitchStrategy` directly from Go.
+
+`main.go` is an empty entry point for adding your own examples.
+From `Parking_Management`, check the packages with:
+
+```sh
+go test ./...
+go vet ./...
+```
+
 ## Problem Statement
 
 Design an automated multi-floor parking system.

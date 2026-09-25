@@ -20,8 +20,9 @@ type AutomatedParkingSystem struct {
 	unparkJobCh         chan UnparkJob
 	shuffleJobCh        chan ShuffleComponent
 	shuffleWake         *sync.Cond
+	bufferSlots         []bufferSlot
+	bufferSlotAvailable *sync.Cond
 	mu                  sync.Mutex
-	observer            ParkingObserver
 }
 
 func NewAutomatedParkingSystem(floorsCnt int, floorSpace int, robotConfig RobotPoolConfig) *AutomatedParkingSystem {
@@ -41,8 +42,10 @@ func NewAutomatedParkingSystem(floorsCnt int, floorSpace int, robotConfig RobotP
 		parkingJobCh:        make(chan ParkingJob, 1000),
 		unparkJobCh:         make(chan UnparkJob, 1000),
 		shuffleJobCh:        make(chan ShuffleComponent, 1000),
+		bufferSlots:         make([]bufferSlot, BufferSlotCount),
 	}
 	aps.shuffleWake = sync.NewCond(&aps.mu)
+	aps.bufferSlotAvailable = sync.NewCond(&aps.mu)
 	for _, floor := range aps.floors {
 		floor.Cond = sync.NewCond(&aps.mu)
 	}
@@ -57,9 +60,6 @@ func (p *AutomatedParkingSystem) Park(vehicle Vehicle, custName string) (*Ticket
 	defer p.mu.Unlock()
 	decision := p.strategy.Allocate(vehicle, p.floors)
 	if decision == nil {
-		if p.observer != nil {
-			p.observer.OnParkRejected(vehicle, "Cannot park vehicle")
-		}
 		return nil, fmt.Errorf("Cannot park vehicle")
 	}
 	floorNumber := decision.FloorNumber
@@ -82,6 +82,7 @@ func (p *AutomatedParkingSystem) Park(vehicle Vehicle, custName string) (*Ticket
 			CustomerName:        custName,
 			Vehicle:             vehicle,
 			PhysicalFloorNumber: -1,
+			BufferSlotIndex:     -1,
 			TargetFloorNumber:   floorNumber,
 			EntryTime:           entryTime,
 			ParkingStatus:       ParkingPending,
@@ -89,14 +90,8 @@ func (p *AutomatedParkingSystem) Park(vehicle Vehicle, custName string) (*Ticket
 		p.recordsByRegNo[vehicle.VehicleRegNo] = parkingRecord
 		p.recordsByTktID[ticketID] = parkingRecord
 		p.floors[floorNumber].ReservedCapacity += getVehicleSpace(vehicle.Type)
-		if p.observer != nil {
-			p.observer.OnParkAccepted(ticketID, vehicle, floorNumber)
-		}
 		return ticket, nil
 	default:
-		if p.observer != nil {
-			p.observer.OnParkRejected(vehicle, "Staging area is filled up. Cannot park")
-		}
 		return nil, fmt.Errorf("Staging area is filled up. Cannot park")
 	}
 }
@@ -106,15 +101,9 @@ func (p *AutomatedParkingSystem) Unpark(ticketID string) (*Receipt, error) {
 	defer p.mu.Unlock()
 	parkingRecord, ok := p.recordsByTktID[ticketID]
 	if !ok {
-		if p.observer != nil {
-			p.observer.OnUnparkRejected(ticketID, "Invalid Ticket")
-		}
 		return nil, fmt.Errorf("Invalid Ticket")
 	}
 	if parkingRecord.UnparkRequested {
-		if p.observer != nil {
-			p.observer.OnUnparkRejected(ticketID, "unpark already requested")
-		}
 		return nil, fmt.Errorf("unpark already requested")
 	}
 	exitTime := time.Now()
@@ -126,24 +115,18 @@ func (p *AutomatedParkingSystem) Unpark(ticketID string) (*Receipt, error) {
 	}
 	parkingRecord.UnparkRequested = true
 	p.shuffleWake.Broadcast()
-	if parkingRecord.ParkingStatus == Parked {
+	if parkingRecord.ParkingStatus == Parked && parkingRecord.BufferSlotIndex < 0 && parkingRecord.PhysicalFloorNumber >= 0 {
 		select {
 		case p.unparkJobCh <- UnparkJob{
 			TicketID: ticketID,
 		}:
 		default:
 			parkingRecord.UnparkRequested = false
-			if p.observer != nil {
-				p.observer.OnUnparkRejected(ticketID, "unparking is busy. Please wait and try again after some time")
-			}
 			return nil, fmt.Errorf("unparking is busy. Please wait and try again after some time")
 		}
 	}
 	totalAmount := getVehicleRatePerHour(vehicleType) * hours
 	p.floors[parkingRecord.TargetFloorNumber].ReservedCapacity -= getVehicleSpace(vehicleType)
-	if p.observer != nil {
-		p.observer.OnUnparkAccepted(ticketID, parkingRecord.Vehicle, parkingRecord.PhysicalFloorNumber)
-	}
 	return &Receipt{
 		TicketID:       ticketID,
 		VehicleDetails: parkingRecord.Vehicle,
@@ -170,19 +153,12 @@ func (p *AutomatedParkingSystem) SwitchStrategy(strategy ParkingStrategy) error 
 		comps = p.commitBlueprint(order)
 	}
 	p.strategy = strategy
-	name := strategyName(strategy)
 	if len(comps) > 0 {
 		p.shufflingInProgress = true
 	}
 	p.mu.Unlock()
-	if p.observer != nil {
-		p.observer.OnStrategyChanged(name)
-	}
 	if len(comps) == 0 {
 		return nil
-	}
-	if p.observer != nil {
-		p.observer.OnRearrangementPlanned(comps)
 	}
 	p.ShuffleJobWG.Add(len(comps))
 	go func() {
@@ -201,7 +177,7 @@ func (p *AutomatedParkingSystem) commitBlueprint(order MovementOrder) []ShuffleC
 	comps := make([]ShuffleComponent, 0)
 	for i, component := range order.Moves {
 		moves := make([]VehicleMove, 0)
-		loop := i < len(order.Loop) && order.Loop[i]
+		loop := order.Loop[i]
 		for _, move := range component {
 			record, ok := p.recordsByTktID[move.TicketID]
 			if !ok || record.UnparkRequested {

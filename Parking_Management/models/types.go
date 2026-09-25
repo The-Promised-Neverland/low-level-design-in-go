@@ -61,6 +61,7 @@ type ParkingRecord struct {
 	CustomerName        string // customer name is abstracted from ticket for privacy
 	Vehicle             Vehicle
 	PhysicalFloorNumber int
+	BufferSlotIndex     int
 	TargetFloorNumber   int
 	EntryTime           time.Time
 	ParkingStatus       ParkingStatus
@@ -94,7 +95,6 @@ type MovementOrder struct {
 	Loop  []bool
 }
 
-// ShuffleComponent is one weakly-connected rearrange unit (possibly a cycle).
 type ShuffleComponent struct {
 	Moves []VehicleMove
 	Loop  bool
