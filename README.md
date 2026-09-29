@@ -17,6 +17,7 @@ If you are here for the **love of Go's concurrency model**, feel free to open a 
 | Project | What it explores |
 | --- | --- |
 | [Parking_Management](./Parking_Management) | Automated multi-floor parking with robot pools, strategy switching, rearrange graphs, buffer slots for cycles |
+| [Elevator_System](./Elevator_System) | Timed floor-by-floor elevator, pluggable scheduling (LOOK with min/max heaps, FIFO), processor goroutine, clean shutdown |
 | [Token Bucket Rate Limiter](./Token%20Bucket%20Rate%20Limiter) | Per-key token buckets, concurrent `Allow`, fair isolation across users |
 | [Job Queue](./Job%20Queue) | Worker pool, retries, dead-letter queue, graceful shutdown |
 | [Connection Pool](./Connection%20Pool) | Acquire / release, max open connections, idle cleanup |
