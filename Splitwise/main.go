@@ -5,8 +5,25 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"time"
 )
 
+type UserGroupBalance struct {
+	UserID   string
+	Name     string
+	IsMember bool
+	Balance  float64
+}
+
+type AddExpenseRequest struct {
+	Amount       float64
+	Description  string
+	Payers       map[string]float64
+	Participants []string
+	Strategy     SplitStrategy
+}
+
+// -----------------------------------------------------------------------
 type User struct {
 	UserID string
 	Name   string
@@ -14,22 +31,22 @@ type User struct {
 
 // ---------------------------------------------------------------------------
 type Group struct {
-	GroupID      string
-	Name         string
-	Participants map[string]*User
+	GroupID string
+	Name    string
+	Members map[string]*User
 }
 
 func (g *Group) AddMember(user *User) {
-	g.Participants[user.UserID] = user
+	g.Members[user.UserID] = user
 }
 
 func (g *Group) RemoveMember(userID string) {
-	delete(g.Participants, userID)
+	delete(g.Members, userID)
 }
 
 func (g *Group) View() []*User {
 	users := make([]*User, 0)
-	for _, value := range g.Participants {
+	for _, value := range g.Members {
 		users = append(users, value)
 	}
 	return users
@@ -135,7 +152,7 @@ func (e *SplitByPercentage) Split(amount float64, participants []string) (map[st
 	}
 	result := make(map[string]float64, len(participants))
 	for _, userID := range participants {
-		result[userID] = e.Percentages[userID]
+		result[userID] = amount * e.Percentages[userID] / 100.0
 	}
 	return result, nil
 }
@@ -150,24 +167,58 @@ type Splitwise interface {
 	AddMember(groupID, userID string) error
 	RemoveMember(groupID, userID string) error
 	GetGroupMembers(groupID string) ([]*User, error)
-	AddExpense(expense *Expense) error
-	GetBalance(userID int) (map[int]float64, error)
-	GetGroupBalances(groupID int) (map[int]float64, error)
+	AddGroupExpense(groupID string, req AddExpenseRequest) error
+	AddIndividualExpense(req AddExpenseRequest) error
+	GetBalance(userID string) (float64, error)
+	GetGroupBalances(groupID string) ([]UserGroupBalance, error)
 	SettleDebt(fromUserID, toUserID int, amount float64) error
 	SimplifyDebts() error
 }
 
+type LedgerEntry struct {
+	EntryID   string
+	ExpenseID string
+	GroupID   string // Empty for personal expenses
+	UserID    string
+	Type      LedgerEntryType
+	Amount    float64
+	CreatedAt time.Time
+}
+
+type LedgerEntryType string
+
+const (
+	Paid       LedgerEntryType = "PAID"
+	Owed       LedgerEntryType = "OWED"
+	Settlement LedgerEntryType = "SETTLEMENT"
+)
+
+type SettlementRecord struct {
+	SettlementID string
+	GroupID      string
+	FromUserID   string
+	ToUserID     string
+	Amount       float64
+	CreatedAt    time.Time
+}
+
 type splitwiseService struct {
-	Users    map[string]*User
-	Groups   map[string]*Group
-	Expenses map[string]*Expense
+	Users       map[string]*User    // key is userID
+	Groups      map[string]*Group   // key is groupID
+	Expenses    map[string]*Expense // key is expenseID
+	Ledger      map[string]*LedgerEntry
+	UserLedger  map[string][]string // userID -> ledger entry IDs
+	GroupLedger map[string][]string // groupID -> ledger entry IDs
 }
 
 func NewSplitwiseService() Splitwise {
 	return &splitwiseService{
-		Users:    make(map[string]*User),
-		Groups:   make(map[string]*Group),
-		Expenses: make(map[string]*Expense),
+		Users:       make(map[string]*User),
+		Groups:      make(map[string]*Group),
+		Expenses:    make(map[string]*Expense),
+		Ledger:      make(map[string]*LedgerEntry),
+		UserLedger:  make(map[string][]string),
+		GroupLedger: make(map[string][]string),
 	}
 }
 
@@ -199,27 +250,20 @@ func (s *splitwiseService) CreateGroup(name string) (*Group, error) {
 		return nil, fmt.Errorf("Please retry later...")
 	}
 	group := &Group{
-		GroupID:      id,
-		Name:         name,
-		Participants: make(map[string]*User),
+		GroupID: id,
+		Name:    name,
+		Members: make(map[string]*User),
 	}
 	s.Groups[group.GroupID] = group
 	return group, nil
 }
 
-func (s *splitwiseService) checkIfExists(groupID, userID string) error {
+func (s *splitwiseService) AddMember(groupID, userID string) error {
 	if _, exists := s.Groups[groupID]; !exists {
 		return fmt.Errorf("No such group exists. Please create the group first")
 	}
 	if _, exists := s.Users[userID]; !exists {
 		return fmt.Errorf("No such user exists. Please create the user first")
-	}
-	return nil
-}
-
-func (s *splitwiseService) AddMember(groupID, userID string) error {
-	if err := s.checkIfExists(groupID, userID); err != nil {
-		return err
 	}
 	user := s.Users[userID]
 	group := s.Groups[groupID]
@@ -228,8 +272,11 @@ func (s *splitwiseService) AddMember(groupID, userID string) error {
 }
 
 func (s *splitwiseService) RemoveMember(groupID, userID string) error {
-	if err := s.checkIfExists(groupID, userID); err != nil {
-		return err
+	if _, exists := s.Groups[groupID]; !exists {
+		return fmt.Errorf("No such group exists. Please create the group first")
+	}
+	if _, exists := s.Users[userID]; !exists {
+		return fmt.Errorf("No such user exists. Please create the user first")
 	}
 	user := s.Users[userID].UserID
 	group := s.Groups[groupID]
@@ -246,124 +293,73 @@ func (s *splitwiseService) GetGroupMembers(groupID string) ([]*User, error) {
 	return users, nil
 }
 
-func (s *splitwiseService) validateGroupExpense(expense *Expense) error {
-	group, exists := s.Groups[expense.GroupID]
-	if !exists {
-		return fmt.Errorf("group not found: %s", expense.GroupID)
+func (s *splitwiseService) AddGroupExpense(groupID string, req AddExpenseRequest) error {
+	if req.Amount <= 0 {
+		return fmt.Errorf("Expense amount cannot be negative or zero")
 	}
-	for _, userID := range expense.Participants {
-		if _, exists := group.Participants[userID]; !exists {
-			return fmt.Errorf(
-				"user %s is not a member of group %s",
-				userID,
-				expense.GroupID,
-			)
-		}
+	if req.Strategy == nil {
+		return fmt.Errorf("Strategy cannot be nil")
+	}
+	if _, exists := s.Groups[groupID]; !exists {
+		return fmt.Errorf("GroupID does not exists")
 	}
 	return nil
 }
 
-func (s *splitwiseService) validateIndividualExpense(expense *Expense) error {
-	seen := make(map[string]bool)
-	for _, userID := range expense.Participants {
-		if _, exists := s.Users[userID]; !exists {
-			return fmt.Errorf("participant not found: %s", userID)
-		}
-		if seen[userID] {
-			return fmt.Errorf("duplicate participant: %s", userID)
-		}
-		seen[userID] = true
+func (s *splitwiseService) AddIndividualExpense(req AddExpenseRequest) error {
+	if req.Amount <= 0 {
+		return fmt.Errorf("Expense amount cannot be negative or zero")
+	}
+	if req.Strategy == nil {
+		return fmt.Errorf("Strategy cannot be nil")
 	}
 	return nil
 }
 
-func (s *splitwiseService) validatePayers(expense *Expense) error {
-	var totalPaid float64
-	for userID, amount := range expense.Payers {
-		if _, exists := s.Users[userID]; !exists {
-			return fmt.Errorf("payer not found: %s", userID)
-		}
-		if amount <= 0 {
-			return fmt.Errorf("payer contribution must be positive: %s", userID)
-		}
-		totalPaid += amount
+func (s *splitwiseService) GetBalance(userID string) (float64, error) {
+	if _, exists := s.Users[userID]; !exists {
+		return 0.0, fmt.Errorf("User does not exits")
 	}
-	if math.Abs(totalPaid-expense.Amount) > 0.001 {
-		return fmt.Errorf(
-			"total payer contributions %.2f do not match expense amount %.2f",
-			totalPaid,
-			expense.Amount,
-		)
+	balance := 0.0
+	for _, expense := range s.Expenses {
+		balance += expense.Payers[userID]       // Will get this amount back
+		balance -= expense.PerUserShare[userID] // Need to pay back
 	}
-	return nil
+	return balance, nil
 }
 
-func (s *splitwiseService) saveExpense(expense *Expense) error {
-	if expense.ExpenseID == "" {
-		for {
-			id, err := generateID()
-			if err != nil {
-				return fmt.Errorf("failed to generate expense ID: %w", err)
-			}
-			if _, exists := s.Expenses[id]; !exists {
-				expense.ExpenseID = id
-				break
-			}
+func (s *splitwiseService) GetGroupBalances(groupID string) ([]UserGroupBalance, error) {
+	if _, exists := s.Groups[groupID]; !exists {
+		return nil, fmt.Errorf("Group does not exits")
+	}
+	balances := make(map[string]float64)
+	for _, expense := range s.Expenses {
+		if expense.GroupID != groupID {
+			continue
 		}
-	} else {
-		if _, exists := s.Expenses[expense.ExpenseID]; exists {
-			return fmt.Errorf("expense ID already exists: %s", expense.ExpenseID)
+		for userID, amountPaid := range expense.Payers {
+			balances[userID] += amountPaid
 		}
-	}
-	s.Expenses[expense.ExpenseID] = expense
-	return nil
-}
-
-func (s *splitwiseService) AddExpense(expense *Expense) error {
-	if expense == nil {
-		return fmt.Errorf("expense cannot be nil")
-	}
-	if expense.Amount <= 0 {
-		return fmt.Errorf("expense amount must be positive")
-	}
-	if expense.Strategy == nil {
-		return fmt.Errorf("split strategy is required")
-	}
-	seen := make(map[string]bool)
-	for _, userID := range expense.Participants {
-		if _, exists := s.Users[userID]; !exists {
-			return fmt.Errorf("participant not found: %s", userID)
-		}
-		if seen[userID] {
-			return fmt.Errorf("duplicate participant: %s", userID)
-		}
-		seen[userID] = true
-	}
-	// it is a group expense and all participants shall belong to same group
-	if expense.GroupID != "" {
-		if err := s.validateGroupExpense(expense); err != nil {
-			return err
+		for userID, share := range expense.PerUserShare {
+			balances[userID] -= share
 		}
 	}
-	// We need to validate payer.
-	// For example: P1,P2,P3 are from a group. but the final bill was paid off by P5, an individual who may or may not be from the group
-	if err := s.validatePayers(expense); err != nil {
-		return err
+	result := make([]UserGroupBalance, 0, len(balances))
+	group := s.Groups[groupID]
+	for userID, balance := range balances {
+		user, exists := s.Users[userID]
+		if !exists {
+			return nil, fmt.Errorf("user not found: %s", userID)
+		}
+		_, isMember := group.Members[userID]
+		result = append(result, UserGroupBalance{
+			UserID:   userID,
+			Name:     user.Name,
+			IsMember: isMember,
+			Balance:  balance,
+		})
 	}
-	shares, err := expense.CalculateSplit()
-	if err != nil {
-		return err
-	}
-	expense.PerUserShare = shares
-	return s.saveExpense(expense)
-}
-
-func (s *splitwiseService) GetBalance(userID int) (map[int]float64, error) {
-	return nil, nil
-}
-
-func (s *splitwiseService) GetGroupBalances(groupID int) (map[int]float64, error) {
-	return nil, nil
+	return result, nil
 }
 
 func (s *splitwiseService) SettleDebt(fromUserID, toUserID int, amount float64) error {
